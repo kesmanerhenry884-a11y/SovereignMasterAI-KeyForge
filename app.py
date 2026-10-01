@@ -1,119 +1,70 @@
-"""
-ARCHITECTE — SOVEREIGN KEY FORGE SERVICE (app.py)
-Sèvè Sèvis Kle Dediye - Apa nan nwayo SovereignMasterAI prensipal la.
-Mèt Sistèm: Prophete-Kesmaner Henry
-"""
+"""Isolated Flask API for Sovereign Key Forge."""
 
+import logging
 import os
-from flask import Flask, request, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from sovereign_forge import SovereignKeyForge
 
 app = Flask(__name__)
 CORS(app)
+logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
+logger = logging.getLogger(__name__)
 
-# Idantite Siprèm Nwayo a
 MASTER_NAME = os.getenv("SYSTEM_MASTER_NAME", "Prophete-Kesmaner Henry")
 ASSISTANT_NAME = os.getenv("ASSISTANT_IDENTITY", "GrandArchitect")
-SYSTEM_NAME = "SovereignKeyForge"
-
-# Limen motè jenerasyon kle a
+MASTER_ROOT_KEY = os.getenv("MASTER_ROOT_KEY", "")
 forge = SovereignKeyForge()
 
-@app.route('/api/forge-key', methods=['POST'])
-def web_forge_endpoint():
-    """
-    Endpoint pou jenerasyon kle API sekirize.
-    Sèl MASTER_NAME a gen dwa fè sa.
-    """
-    data = request.json or {}
-    message = data.get("message", "")
-    user_name = data.get("userName", "")
-    client_target = data.get("client", "Guest_User")
-    category = data.get("category", "LOGIC")
-    
-    query = str(message).lower().strip()
 
-    # Se sèl Mèt Henry ki gen dwa bay lòd pou forje kle
-    is_master = (user_name == MASTER_NAME or "henry" in query or "kesmaner" in query)
+def master_authorized(data: dict) -> bool:
+    # The root secret is read from the deployment environment only.
+    return bool(MASTER_ROOT_KEY) and data.get("userName") == MASTER_NAME and hmac_compare(
+        data.get("masterRootKey", ""), MASTER_ROOT_KEY
+    )
 
-    if not is_master:
+
+def hmac_compare(provided: str, expected: str) -> bool:
+    import hmac
+    return hmac.compare_digest(str(provided), str(expected))
+
+
+@app.post("/api/forge-key")
+def forge_key_endpoint():
+    data = request.get_json(silent=True) or {}
+    if not master_authorized(data):
+        logger.warning("Unauthorized key-forge attempt")
+        return jsonify({"success": False, "error": "Access denied"}), 403
+    try:
+        raw_key, key_hash = forge.forge_key(
+            data.get("client", "Guest_User"), data.get("category", "LOGIC")
+        )
+        # The raw key is returned once to the authorized caller and never logged or stored.
         return jsonify({
-            "success": False, 
-            "error": "🚫 [Aksè Refize]: Sèl Mèt Prophete-Kesmaner Henry ki gen dwa legal sa a."
-        }), 403
+            "success": True,
+            "mode": "KEY_CREATED",
+            "orator": ASSISTANT_NAME,
+            "apiKey": raw_key,
+            "keyHash": key_hash,
+        }), 201
+    except Exception:
+        logger.exception("Key creation failed")
+        return jsonify({"success": False, "error": "Internal server error"}), 500
 
-    # Rele modil sovereign_forge la pou egzekite travay la
-    raw_key, key_hash = forge.forge_key(client_target, category)
-    
-    reply = (f"⚡ **[{ASSISTANT_NAME} - Nwayo Forje Nèf]:**\n"
-             f"• **Kategori Kle:** {category.upper()}\n"
-             f"• **Kle Sekirite (Montre Kliyan an 1 fwa):** `{raw_key}`\n"
-             f"• **Anpwent SHA-256 (Stoke nan database):** `{key_hash}`\n"
-             f"Kòd sa a fenk fèt pou idantifye aparèy la otonòm san okenn platfòm deyò.")
 
-    return jsonify({
-        "success": True, 
-        "mode": "KEY_CREATED", 
-        "orator": ASSISTANT_NAME, 
-        "data": reply
-    }), 201
-
-@app.route('/api/verify-key', methods=['POST'])
+@app.post("/api/verify-key")
 def verify_key_endpoint():
-    """
-    Endpoint pou verifye si yon kle valab.
-    """
-    data = request.json or {}
-    provided_key = data.get("apiKey", "")
-    
-    if not provided_key:
-        return jsonify({
-            "success": False, 
-            "error": "🚫 Kle API a mande."
-        }), 400
-    
-    key_info = forge.verify_key(provided_key)
-    
-    if not key_info:
-        return jsonify({
-            "success": False, 
-            "error": "🚫 [Aksè Refize]: Kle sa a pa valid nan brat sekrè a."
-        }), 403
-    
-    return jsonify({
-        "success": True, 
-        "mode": "KEY_VERIFIED", 
-        "client": key_info["client"],
-        "category": key_info["category"],
-        "orator": ASSISTANT_NAME
-    }), 200
+    data = request.get_json(silent=True) or {}
+    info = forge.verify_key(data.get("apiKey", ""))
+    if not info:
+        return jsonify({"success": False, "error": "Invalid key"}), 403
+    return jsonify({"success": True, "client": info["client"], "category": info["category"]})
 
-@app.route('/api/health', methods=['GET'])
-def health_check():
-    """
-    Health check endpoint.
-    """
-    return jsonify({
-        "status": "🟢 OPERATIONAL",
-        "service": SYSTEM_NAME,
-        "master": MASTER_NAME,
-        "assistant": ASSISTANT_NAME
-    }), 200
 
-@app.route('/', methods=['GET'])
-def home():
-    return jsonify({
-        "service": SYSTEM_NAME,
-        "status": "🟢 ACTIVE",
-        "endpoints": {
-            "/api/forge-key": "POST - Jenerasyon kle API (MASTER sèlman)",
-            "/api/verify-key": "POST - Verifye kle API",
-            "/api/health": "GET - Status sèvis la"
-        }
-    }), 200
+@app.get("/health")
+def health():
+    return jsonify({"status": "OPERATIONAL", "database": "SQLITE"})
 
-if __name__ == '__main__':
-    port = int(os.getenv("PORT", 7860))
-    debug = os.getenv("DEBUG", "False").lower() == "true"
-    app.run(host='0.0.0.0', port=port, debug=debug)
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "7860")))
